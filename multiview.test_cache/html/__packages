@@ -1,0 +1,17 @@
+multiview
+Matrix
+glmnet
+dplyr
+ggplot2
+magrittr
+stringr
+matrixStats
+MatrixGenerics
+BiocGenerics
+S4Vectors
+IRanges
+GenomeInfoDb
+GenomicRanges
+Biobase
+SummarizedExperiment
+MultiAssayExperiment

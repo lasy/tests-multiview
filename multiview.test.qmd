@@ -1,0 +1,502 @@
+---
+title: "Tests multiview"
+format: html
+editor: visual
+execute:
+  cache: true
+---
+
+```{r}
+
+# install.packages("multiview")
+library(multiview)
+library(glmnet)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(stringr)
+```
+
+```{r}
+#| cache: false
+source("functions.R")
+```
+
+# Example tests
+
+```{r}
+
+x = matrix(rnorm(100 * 20), 100, 20)
+z = matrix(rnorm(100 * 10), 100, 10)
+y = rnorm(100)
+fit1 = multiview(list(x=x,z=z), y, rho = 0)
+# print(fit1)
+plot(fit1)
+
+
+fit2 = multiview(list(x=x,z=z), y, rho = 1)
+plot(fit2)
+
+```
+
+# More "advanced" tests
+
+For 10 different splits of test-training set, we want to compare the MSE of
+
+-   the lasso on X alone,
+
+-   the lasso on Z alone,
+
+-    the lasso on X and Z, (early fusion)
+
+-   the lasso on X and Z, (late fusion: combined predictions from 1 and 2)
+
+-   cooperative learning on X and Z for $\rho \in \{0, 0.5, 1, 2\}$
+
+## Uncorrelated (and uninteresting) data
+
+```{r}
+
+x = matrix(rnorm(100 * 20), 100, 20)
+z = matrix(rnorm(100 * 10), 100, 10)
+y = x[,1] + x[, 2] - z[, 1] - z[,2]
+
+x_list <- list(x = x, z = z)
+
+```
+
+```{r}
+
+fits <- purrr::map(
+  .x = 1:10,
+  .f = split_and_fit,
+  x_list = x_list,
+  y = y,
+  train_test_p = 0.8, 
+  family = gaussian()
+)
+
+```
+
+```{r}
+#| fig.height: 9
+#| fig.width: 9
+
+predicted <- predict_y(fits)
+
+plot_predictions(predicted)
+
+```
+
+```{r}
+
+plot_MSE(predicted)
+
+```
+
+```{r}
+
+selected_features <- 
+  retrieve_non_zero_coeff(fits)
+
+plot_nonzero_coeff(selected_features)
+
+```
+
+## VMRC data
+
+Trying to predict the proportion of lactobacillus species from the metabolites and the cytokines in the samples of our 40 pregnant subjects.
+
+```{r}
+#| echo: true
+#| warning: false
+library(MultiAssayExperiment)
+
+```
+
+```{r}
+
+mae <- readRDS(file = "/Users/laurasymul/Dropbox/VMRC_analysis/Topic_paper/VMRC-subcommunities-analyses/results/mae_for_analyses.Rds")
+```
+
+```{r}
+
+x = assay(mae, "MB_P_t_imputed") %>% t() 
+colnames(x) <- str_c("x_", colnames(x))
+
+z = assay(mae, "I_t_imputed") %>% t() 
+colnames(z) <- str_c("z_", colnames(z))
+
+common_samples <- intersect(rownames(x), rownames(z))
+x <- x[common_samples,]
+z <- z[common_samples,]
+
+y <- mae$prop_Lacto[match(common_samples, mae$SampleID)]
+
+
+x <- scale(x)
+z <- scale(z)
+
+pre_x <- glmnet(x = x, y = y, family = quasibinomial())
+# we keep around 40 nonzero features
+j <- min(which(pre_x$df > 40))
+pre_selected_features <- pre_x$beta[pre_x$beta[,j] != 0, j] %>% names()
+x <- x[, pre_selected_features]
+
+x_list <- list(x = x, z = z)
+
+
+```
+
+```{r}
+
+fits_vmrc_file <- "fits_vmrc.Rdata"
+
+if (!file.exists(fits_vmrc_file)) {
+  fits_vmrc <- purrr::map(
+    .x = 1:10,
+    .f = split_and_fit,
+    x_list = x_list,
+    y = y,
+    train_test_p = 0.8,
+    family = quasibinomial()
+  )
+  save(fits_vmrc, file = fits_vmrc_file)
+} else {
+  load(fits_vmrc_file)
+}
+
+```
+
+```{r}
+#| fig.height: 9
+#| fig.width: 9
+
+predicted_vmrc <- predict_y(fits_vmrc)
+
+plot_predictions(predicted_vmrc)
+
+```
+
+```{r}
+
+plot_MSE(predicted_vmrc)
+
+
+```
+
+```{r}
+
+selected_features_vmrc <- 
+  retrieve_non_zero_coeff(fits_vmrc)
+
+plot_nonzero_coeff(selected_features_vmrc)
+
+```
+
+```{r}
+view.contribution(
+  x_list = x_list, y = y, rho = 0.5,
+  family = quasibinomial(), eval_data = "train"
+  )
+```
+
+```{r}
+view.contribution(
+  x_list = x_list, y = y, rho = 0,
+  family = quasibinomial(), eval_data = "train"
+  )
+```
+
+## Sanity check: cooperative learning does better when correlated views?
+
+```{r}
+
+x = matrix(rnorm(200*20), 200, 20)
+z = matrix(rnorm(200*20), 200, 20)
+U = matrix(rep(0, 200*10), 200, 10) # latent factors
+for (m in seq(10)){
+    u = rnorm(200)
+    x[, m] = x[, m] + u
+    z[, m] = z[, m] + u
+    U[, m] = U[, m] + u
+    }
+beta_U = c(rep(2, 5),rep(-2, 5))
+y = U %*% beta_U + 2 * rnorm(100)
+
+x_list = list(x = x, z = z)
+
+```
+
+```{r}
+
+
+fits_latent_file <- "fits_latent.Rdata"
+
+if (!file.exists(fits_latent_file)) {
+  
+  fits <- purrr::map(
+    .x = 1:10,
+    .f = split_and_fit,
+    x_list = x_list,
+    y = y,
+    train_test_p = 0.8, 
+    family = gaussian()
+  )
+  save(fits, file = fits_latent_file)
+} else {
+  load(fits_latent_file)
+}
+
+
+
+```
+
+```{r}
+predicted <- predict_y(fits)
+```
+
+```{r}
+#| fig.height: 9
+#| fig.width: 9
+
+plot_predictions(predicted)
+
+```
+
+```{r}
+
+plot_MSE(predicted)
+
+```
+
+```{r}
+
+selected_features <- 
+  retrieve_non_zero_coeff(fits)
+
+plot_nonzero_coeff(selected_features)
+
+```
+
+```{r}
+view.contribution(
+  x_list = x_list, y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+
+
+view.contribution(
+  x_list = list(x = x, z = z, w = cbind(x, z)), y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+```
+
+## Sanity check2: Does it help to lower the SNR?
+
+```{r}
+
+x = matrix(rnorm(200*20), 200, 20)
+z = matrix(rnorm(200*20), 200, 20)
+U = matrix(rep(0, 200*10), 200, 10) # latent factors
+for (m in seq(10)){
+    u = rnorm(200)
+    x[, m] = x[, m] + u
+    z[, m] = z[, m] + u
+    U[, m] = U[, m] + u
+    }
+beta_U = c(rep(2, 5),rep(-2, 5))
+y = U %*% beta_U + 6 * rnorm(100)
+
+x_list = list(x = x, z = z)
+
+```
+
+```{r}
+
+
+fits_latent_file <- "fits_latent_high_SNR.Rdata"
+
+if (!file.exists(fits_latent_file)) {
+  
+  fits <- purrr::map(
+    .x = 1:10,
+    .f = split_and_fit,
+    x_list = x_list,
+    y = y,
+    train_test_p = 0.8, 
+    family = gaussian()
+  )
+  save(fits, file = fits_latent_file)
+} else {
+  load(fits_latent_file)
+}
+
+
+
+```
+
+```{r}
+
+predicted <- predict_y(fits)
+
+```
+
+```{r}
+#| fig.height: 9
+#| fig.width: 9
+
+plot_predictions(predicted)
+
+```
+
+```{r}
+
+plot_MSE(predicted)
+
+```
+
+```{r}
+
+selected_features <- 
+  retrieve_non_zero_coeff(fits)
+
+plot_nonzero_coeff(selected_features)
+
+```
+
+```{r}
+
+view.contribution(
+  x_list = x_list, y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+
+
+view.contribution(
+  x_list = list(x = x, z = z, w = cbind(x, z)), y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+```
+
+## Sanity check2: Increase nb of features
+
+```{r}
+
+p_u <- 60
+x = matrix(rnorm(200*20), 200, 1000)
+z = matrix(rnorm(200*20), 200, 1000)
+U = matrix(rep(0, 200*10), 200, 60) # latent factors
+for (m in seq(10)){
+    u = rnorm(200)
+    x[, m] = x[, m] + u
+    z[, m] = z[, m] + u
+    U[, m] = U[, m] + u
+    }
+beta_U = c(rep(2, p_u/2),rep(-2, p_u/2))
+y = U %*% beta_U + 6 * rnorm(100)
+
+x_list = list(x = x, z = z)
+
+```
+
+```{r}
+
+
+fits_latent_file <- "fits_latent_high_p.Rdata"
+
+if (!file.exists(fits_latent_file)) {
+  
+  fits <- purrr::map(
+    .x = 1:10,
+    .f = split_and_fit,
+    x_list = x_list,
+    y = y,
+    train_test_p = 0.8, 
+    family = gaussian()
+  )
+  save(fits, file = fits_latent_file)
+} else {
+  load(fits_latent_file)
+}
+
+
+
+```
+
+```{r}
+
+predicted <- predict_y(fits)
+
+```
+
+```{r}
+#| fig.height: 9
+#| fig.width: 9
+
+plot_predictions(predicted)
+
+```
+
+```{r}
+
+plot_MSE(predicted)
+
+```
+
+```{r}
+
+selected_features <- 
+  retrieve_non_zero_coeff(fits)
+
+plot_nonzero_coeff(selected_features)
+
+```
+
+```{r}
+
+selected_features_summary <- 
+  selected_features %>% 
+  group_by(method_group, method, method_print, view, name, index) %>% 
+  summarize(n = n(), mean_value = mean(value), value_sd = sd(value), .groups = "drop")
+
+
+ggplot(selected_features_summary %>% filter(n == 10), 
+         aes(x = mean_value, y = name %>% forcats::fct_rev(), col = view)) +
+    geom_vline(xintercept = 0) +
+    geom_point() +
+    facet_grid(view ~ method, scales = "free_y", space = "free_y") +
+    guides(col = "none") +
+    ylab("features")
+```
+
+```{r}
+
+view.contribution(
+  x_list = x_list, y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+
+
+view.contribution(
+  x_list = list(x = x, z = z, w = cbind(x, z)), y = y, rho = 0.5,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+```
+
+```{r}
+
+
+view.contribution(
+  x_list = x_list, y = y, rho = 2,
+  type.measure = "mse",
+  family = gaussian(), eval_data = "train"
+  )
+
+```
